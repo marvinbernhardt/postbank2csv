@@ -3,20 +3,23 @@
 import argparse
 import csv
 import subprocess
+import sys
 import tempfile
 
 parser = argparse.ArgumentParser(description='Convert Postbank account statement pdf files to a single csv file.')
 parser.add_argument('pdf_files', metavar='pdf_file', type=argparse.FileType('r'), nargs='+', help='pdf files to convert')
 args = parser.parse_args()
 
+
 def main():
     statements = []
 
     for file in args.pdf_files:
-        print(file.name)
+        #print(file.name)
         statements += parse_statements_from_file(str(file.name))
 
-    save_statements_as_csv(statements, "statements.csv")
+    write_statements_as_csv(statements)
+
 
 def parse_statements_from_file(pdf_filename):
     txt_filename = next(tempfile._get_candidate_names()) + ".txt"
@@ -28,6 +31,7 @@ def parse_statements_from_file(pdf_filename):
     with open(txt_filename, 'r') as f:
         filecontent = f.read()
 
+    in_toprow_area = False
     in_statement_area = False
     in_statement = False
     last_line_token = []
@@ -36,17 +40,27 @@ def parse_statements_from_file(pdf_filename):
 
     for line in filecontent.splitlines():
         line_token = [token.strip() for token in line.split()]
+        #print(line_token)
 
         if line_token == ['Buchung/Wert', 'Vorgang/Buchungsinformation', 'Soll', 'Haben']:
+            in_toprow_area = False
             in_statement_area = True
             last_line_token = line_token
             continue
 
-        if line_token == ['Auszug', 'Jahr', 'Seite', 'von', 'IBAN', 'Übertrag']:
+        if line_token[:4] == ['Auszug', 'Jahr', 'Seite', 'von']:
+            in_toprow_area = True
             in_statement_area = False
+            continue
 
         if line_token == ['Kontonummer', 'BLZ', 'Summe', 'Zahlungseingänge']:
             in_statement_area = False
+            break
+
+        if in_toprow_area:
+            file_number = int(line_token[0])
+            file_year = int(line_token[1])
+            in_toprow_area = False
 
         if in_statement_area:
             #print(line_token)
@@ -69,9 +83,15 @@ def parse_statements_from_file(pdf_filename):
                     except ValueError:
                         in_statement = False
                         continue
-                    statement['date1'] = line_token[0].split('/')[0][:-1]
-                    statement['date2'] = line_token[0].split('/')[1][:-1]
-                    print(statement['date1'], statement['date2'])
+                    date_day, date_month = line_token[0].split('/')[0][:-1].split('.')
+                    if file_number == 1 and date_month not in ['12', '01']:
+                        Exception(f"There is a statement from something else than Dec or Jan in the first document of {file_year}!")
+                    elif file_number == 1 and date_month == '12':
+                        date_year = file_year - 1
+                    else:
+                        date_year = file_year
+
+                    statement['date'] = f"{str(date_year)}-{date_month}-{date_day}"
                     statement['type'] = ' '.join(line_token[1:-2])
                     statement['other'] = ""
                     statement_first_line = False
@@ -88,14 +108,13 @@ def parse_statements_from_file(pdf_filename):
     return statements
 
 
-def save_statements_as_csv(statements, csv_filename):
+def write_statements_as_csv(statements):
 
-    with open(csv_filename, 'w', newline='') as csvfile:
-        fieldnames = ['date1', 'date2', 'type', 'value', 'other']
-        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-        writer.writeheader()
-        for statement in statements:
-            writer.writerow(statement)
+    fieldnames = ['date', 'type', 'value', 'other']
+    writer = csv.DictWriter(sys.stdout, fieldnames=fieldnames)
+    #writer.writeheader()
+    for statement in statements:
+        writer.writerow(statement)
 
 
 if __name__ == "__main__":
